@@ -243,11 +243,13 @@ async def list_urls(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     urls, interval = get_urls_and_interval()
+
     if not urls:
-        await update.message.reply_text(
-            f"No URLs configured.
-Current interval: {interval} seconds"
+        msg = (
+            "No URLs configured.\n"
+            f"Current interval: {interval} seconds"
         )
+        await update.message.reply_text(msg)
         return
 
     lines = []
@@ -262,12 +264,11 @@ Current interval: {interval} seconds"
             s = "UNKNOWN"
         lines.append(f"- {u} [{s}]")
 
-    text = "Current URLs:
-" + "
-".join(lines)
-    text += f"
+    header = "Current URLs:\n"
+    body = "\n".join(lines)
+    footer = f"\n\nCurrent interval: {interval} seconds"
+    text = header + body + footer
 
-Current interval: {interval} seconds"
     await update.message.reply_text(text)
 
 
