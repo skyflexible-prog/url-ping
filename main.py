@@ -159,14 +159,17 @@ async def async_ping_cycle(application):
 
 
 def ping_loop(application):
+    loop = application.bot._loop  # event loop used by python-telegram-bot
     while True:
         try:
-            application.run_async(async_ping_cycle(application))
+            asyncio.run_coroutine_threadsafe(
+                async_ping_cycle(application), loop
+            )
         except Exception as e:
             logger.error("Error in async_ping_cycle: %s", e)
+
         _, interval = get_urls_and_interval()
         time.sleep(max(MIN_INTERVAL, interval))
-
 
 # ----------------- Telegram handlers -----------------
 def is_authorized(update: Update) -> bool:
