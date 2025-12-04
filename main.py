@@ -182,22 +182,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, interval = get_urls_and_interval()
 
     msg = (
-        "Uptime bot online.
-"
-        "Commands:
-"
-        "/add <url>
-"
-        "/remove <url>
-"
-        "/list
-"
-        "/set_interval <seconds>
-"
-        "/get_interval
-"
-        "
-"
+        "Uptime bot online."
+        "Commands:"
+        "/add <url>"
+        "/remove <url>"
+        "/list"
+        "/set_interval <seconds>"
+        "/get_interval"
         f"Current interval: {interval} seconds"
     )
 
