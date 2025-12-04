@@ -1,4 +1,5 @@
 import os
+import asyncio
 import json
 import time
 import threading
@@ -121,6 +122,7 @@ async def notify_status_change(application, url: str, is_up: bool):
 
 
 # ----------------- Ping loop -----------------
+# ----------------- Ping loop -----------------
 async def async_ping_cycle(application):
     urls, interval = get_urls_and_interval()
     if urls:
@@ -128,7 +130,6 @@ async def async_ping_cycle(application):
     else:
         logger.info("No URLs configured (interval=%ds)", interval)
 
-    # Ensure state entries
     for url in urls:
         URL_STATES.setdefault(url, {"is_up": None, "fail_count": 0})
 
@@ -138,7 +139,6 @@ async def async_ping_cycle(application):
         prev = state["is_up"]
 
         if is_up:
-            # Recovered?
             if prev is False:
                 state["is_up"] = True
                 state["fail_count"] = 0
@@ -152,19 +152,19 @@ async def async_ping_cycle(application):
                 state["is_up"] = False
                 await notify_status_change(application, url, False)
 
-    # Clean up removed URLs
     for u in list(URL_STATES.keys()):
         if u not in urls:
             del URL_STATES[u]
 
 
 def ping_loop(application):
-    loop = application.bot._loop  # event loop used by python-telegram-bot
+    """Runs in a separate thread with its own event loop."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     while True:
         try:
-            asyncio.run_coroutine_threadsafe(
-                async_ping_cycle(application), loop
-            )
+            loop.run_until_complete(async_ping_cycle(application))
         except Exception as e:
             logger.error("Error in async_ping_cycle: %s", e)
 
