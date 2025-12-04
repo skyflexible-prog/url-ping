@@ -192,8 +192,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n"
         f"Current interval: {interval} seconds"
     )
-    
+
     await update.message.reply_text(msg)
+
 
 async def add_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
