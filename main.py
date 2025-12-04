@@ -14,10 +14,10 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# ---------- Config & persistence ----------
+# ---------- Config ----------
 DATA_FILE = Path("config.json")
 DEFAULT_INTERVAL = 300  # 5 minutes
-MIN_INTERVAL = 30       # hard minimum
+MIN_INTERVAL = 30
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID")  # optional
@@ -28,14 +28,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Good health values for body / JSON "status"
 GOOD_VALUES = {"ok", "healthy", "up"}
 
 CONFIG_LOCK = threading.Lock()
-# url_states: {url: {"is_up": bool, "fail_count": int}}
 URL_STATES: Dict[str, Dict[str, Any]] = {}
 
 
+# ---------- Config helpers ----------
 def load_config() -> Dict[str, Any]:
     if not DATA_FILE.exists():
         return {"urls": [], "interval": DEFAULT_INTERVAL}
@@ -79,15 +78,6 @@ def update_config(urls=None, interval=None) -> Dict[str, Any]:
 
 # ---------- Health check ----------
 def check_health(url: str) -> bool:
-    """
-    Returns True if URL is considered UP, False if DOWN.
-    Logic:
-      - HTTP status 200–399 required
-      - Body can be:
-          * "OK", "ok", "healthy", etc.
-          * JSON with {"status": "ok"/"healthy"/"up"}
-          * Anything else => still treated as UP as long as status code is good
-    """
     try:
         resp = requests.get(url, timeout=10)
     except Exception as e:
@@ -100,11 +90,9 @@ def check_health(url: str) -> bool:
 
     text = (resp.text or "").strip()
 
-    # Plain text check (e.g. "OK")
     if text and text.lower() in GOOD_VALUES:
         return True
 
-    # JSON like {"status": "ok"} or {"status": "healthy"}
     try:
         data = json.loads(text)
         if isinstance(data, dict):
@@ -112,14 +100,12 @@ def check_health(url: str) -> bool:
             if val in GOOD_VALUES:
                 return True
     except Exception:
-        # not JSON or parsing failed; ignore
         pass
 
-    # Fallback: status code is good -> assume UP
     return True
 
 
-# ---------- Telegram notification helper ----------
+# ---------- Telegram notify ----------
 async def notify_status_change(application, url: str, is_up: bool):
     if not ALLOWED_CHAT_ID:
         return
@@ -130,7 +116,7 @@ async def notify_status_change(application, url: str, is_up: bool):
         logger.error("Failed to send Telegram message: %s", e)
 
 
-# ---------- Pinger thread ----------
+# ---------- Ping loop ----------
 async def async_ping_cycle(application):
     urls, interval = get_urls_and_interval()
     if urls:
@@ -138,20 +124,16 @@ async def async_ping_cycle(application):
     else:
         logger.info("No URLs configured (interval=%ds)", interval)
 
-    # Ensure states exist
     for url in urls:
         URL_STATES.setdefault(url, {"is_up": None, "fail_count": 0})
 
     for url in urls:
         is_up = check_health(url)
         state = URL_STATES.setdefault(url, {"is_up": None, "fail_count": 0})
-
         prev = state["is_up"]
 
         if is_up:
-            # reset failures
             if prev is False:
-                # was DOWN, now UP
                 state["is_up"] = True
                 state["fail_count"] = 0
                 await notify_status_change(application, url, True)
@@ -159,44 +141,38 @@ async def async_ping_cycle(application):
                 state["is_up"] = True
                 state["fail_count"] = 0
         else:
-            # mark failure
             state["fail_count"] += 1
-            # consider DOWN after 3 consecutive failures
             if state["fail_count"] >= 3 and prev in (True, None):
                 state["is_up"] = False
                 await notify_status_change(application, url, False)
 
-    # Clean up states for removed URLs
     for u in list(URL_STATES.keys()):
         if u not in urls:
             del URL_STATES[u]
 
 
 def ping_loop(application):
-    # run forever
     while True:
         try:
             application.run_async(async_ping_cycle(application))
         except Exception as e:
             logger.error("Error in async_ping_cycle: %s", e)
-
         _, interval = get_urls_and_interval()
         time.sleep(max(MIN_INTERVAL, interval))
 
 
-# ---------- Telegram bot helpers ----------
+# ---------- Telegram handlers ----------
 def is_authorized(update: Update) -> bool:
     if ALLOWED_CHAT_ID is None:
         return True
-    chat_id = update.effective_chat.id
-    return str(chat_id) == str(ALLOWED_CHAT_ID)
+    return str(update.effective_chat.id) == str(ALLOWED_CHAT_ID)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return
     _, interval = get_urls_and_interval()
-    await update.message.reply_text(
+    msg = (
         "Uptime bot online.
 "
         "Commands:
@@ -214,6 +190,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 "
         f"Current interval: {interval} seconds"
     )
+    await update.message.reply_text(msg)
 
 
 async def add_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,13 +199,11 @@ async def add_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /add https://your-app.onrender.com/health")
         return
-
     url = context.args[0].strip()
     urls, _ = get_urls_and_interval()
     if url in urls:
         await update.message.reply_text("URL already in list.")
         return
-
     urls.append(url)
     update_config(urls=urls)
     URL_STATES.setdefault(url, {"is_up": None, "fail_count": 0})
@@ -241,13 +216,11 @@ async def remove_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /remove https://your-app.onrender.com/health")
         return
-
     url = context.args[0].strip()
     urls, _ = get_urls_and_interval()
     if url not in urls:
         await update.message.reply_text("URL not found in list.")
         return
-
     urls.remove(url)
     update_config(urls=urls)
     URL_STATES.pop(url, None)
@@ -264,7 +237,6 @@ async def list_urls(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Current interval: {interval} seconds"
         )
         return
-
     lines = []
     for u in urls:
         state = URL_STATES.get(u, {"is_up": None})
@@ -276,7 +248,6 @@ Current interval: {interval} seconds"
         else:
             s = "UNKNOWN"
         lines.append(f"- {u} [{s}]")
-
     text = "Current URLs:
 " + "
 ".join(lines)
@@ -292,16 +263,14 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /set_interval <seconds>")
         return
-
     try:
         seconds = int(context.args[0])
         if seconds < MIN_INTERVAL:
             await update.message.reply_text(f"Minimum interval is {MIN_INTERVAL} seconds.")
             return
     except ValueError:
-        await update.message.reply_text("Interval must be an integer number of seconds.")
+        await update.message.reply_text("Interval must be an integer.")
         return
-
     cfg = update_config(interval=seconds)
     await update.message.reply_text(
         f"Ping interval updated to {cfg['interval']} seconds."
@@ -323,11 +292,7 @@ def main():
     if not DATA_FILE.exists():
         save_config({"urls": [], "interval": DEFAULT_INTERVAL})
 
-    application = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("add", add_url))
@@ -336,7 +301,6 @@ def main():
     application.add_handler(CommandHandler("set_interval", set_interval))
     application.add_handler(CommandHandler("get_interval", get_interval))
 
-    # Start background pinger in separate thread
     t = threading.Thread(target=ping_loop, args=(application,), daemon=True)
     t.start()
 
