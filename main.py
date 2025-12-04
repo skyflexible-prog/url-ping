@@ -14,10 +14,10 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# ---------- Config ----------
+# ----------------- Basic config -----------------
 DATA_FILE = Path("config.json")
 DEFAULT_INTERVAL = 300  # 5 minutes
-MIN_INTERVAL = 30
+MIN_INTERVAL = 30       # do not allow lower than this
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID")  # optional
@@ -31,10 +31,10 @@ logger = logging.getLogger(__name__)
 GOOD_VALUES = {"ok", "healthy", "up"}
 
 CONFIG_LOCK = threading.Lock()
-URL_STATES: Dict[str, Dict[str, Any]] = {}
+URL_STATES: Dict[str, Dict[str, Any]] = {}  # {url: {"is_up": bool|None, "fail_count": int}}
 
 
-# ---------- Config helpers ----------
+# ----------------- Config helpers -----------------
 def load_config() -> Dict[str, Any]:
     if not DATA_FILE.exists():
         return {"urls": [], "interval": DEFAULT_INTERVAL}
@@ -76,8 +76,9 @@ def update_config(urls=None, interval=None) -> Dict[str, Any]:
     return cfg
 
 
-# ---------- Health check ----------
+# ----------------- Health check -----------------
 def check_health(url: str) -> bool:
+    """Return True if URL is UP, False if DOWN."""
     try:
         resp = requests.get(url, timeout=10)
     except Exception as e:
@@ -90,9 +91,11 @@ def check_health(url: str) -> bool:
 
     text = (resp.text or "").strip()
 
+    # Plain text health like "OK"
     if text and text.lower() in GOOD_VALUES:
         return True
 
+    # JSON like {"status":"ok"} or {"status":"healthy"}
     try:
         data = json.loads(text)
         if isinstance(data, dict):
@@ -102,10 +105,11 @@ def check_health(url: str) -> bool:
     except Exception:
         pass
 
+    # Fallback: status code OK => treat as up
     return True
 
 
-# ---------- Telegram notify ----------
+# ----------------- Telegram notifications -----------------
 async def notify_status_change(application, url: str, is_up: bool):
     if not ALLOWED_CHAT_ID:
         return
@@ -116,7 +120,7 @@ async def notify_status_change(application, url: str, is_up: bool):
         logger.error("Failed to send Telegram message: %s", e)
 
 
-# ---------- Ping loop ----------
+# ----------------- Ping loop -----------------
 async def async_ping_cycle(application):
     urls, interval = get_urls_and_interval()
     if urls:
@@ -124,6 +128,7 @@ async def async_ping_cycle(application):
     else:
         logger.info("No URLs configured (interval=%ds)", interval)
 
+    # Ensure state entries
     for url in urls:
         URL_STATES.setdefault(url, {"is_up": None, "fail_count": 0})
 
@@ -133,6 +138,7 @@ async def async_ping_cycle(application):
         prev = state["is_up"]
 
         if is_up:
+            # Recovered?
             if prev is False:
                 state["is_up"] = True
                 state["fail_count"] = 0
@@ -146,6 +152,7 @@ async def async_ping_cycle(application):
                 state["is_up"] = False
                 await notify_status_change(application, url, False)
 
+    # Clean up removed URLs
     for u in list(URL_STATES.keys()):
         if u not in urls:
             del URL_STATES[u]
@@ -161,7 +168,7 @@ def ping_loop(application):
         time.sleep(max(MIN_INTERVAL, interval))
 
 
-# ---------- Telegram handlers ----------
+# ----------------- Telegram handlers -----------------
 def is_authorized(update: Update) -> bool:
     if ALLOWED_CHAT_ID is None:
         return True
@@ -171,7 +178,9 @@ def is_authorized(update: Update) -> bool:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return
+
     _, interval = get_urls_and_interval()
+
     msg = (
         "Uptime bot online.
 "
@@ -186,10 +195,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set_interval <seconds>
 "
         "/get_interval
-
+"
+        "
 "
         f"Current interval: {interval} seconds"
     )
+
     await update.message.reply_text(msg)
 
 
@@ -197,13 +208,17 @@ async def add_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return
     if not context.args:
-        await update.message.reply_text("Usage: /add https://your-app.onrender.com/health")
+        await update.message.reply_text(
+            "Usage: /add https://your-app.onrender.com/health"
+        )
         return
+
     url = context.args[0].strip()
     urls, _ = get_urls_and_interval()
     if url in urls:
         await update.message.reply_text("URL already in list.")
         return
+
     urls.append(url)
     update_config(urls=urls)
     URL_STATES.setdefault(url, {"is_up": None, "fail_count": 0})
@@ -214,13 +229,17 @@ async def remove_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return
     if not context.args:
-        await update.message.reply_text("Usage: /remove https://your-app.onrender.com/health")
+        await update.message.reply_text(
+            "Usage: /remove https://your-app.onrender.com/health"
+        )
         return
+
     url = context.args[0].strip()
     urls, _ = get_urls_and_interval()
     if url not in urls:
         await update.message.reply_text("URL not found in list.")
         return
+
     urls.remove(url)
     update_config(urls=urls)
     URL_STATES.pop(url, None)
@@ -230,6 +249,7 @@ async def remove_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def list_urls(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return
+
     urls, interval = get_urls_and_interval()
     if not urls:
         await update.message.reply_text(
@@ -237,6 +257,7 @@ async def list_urls(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Current interval: {interval} seconds"
         )
         return
+
     lines = []
     for u in urls:
         state = URL_STATES.get(u, {"is_up": None})
@@ -248,6 +269,7 @@ Current interval: {interval} seconds"
         else:
             s = "UNKNOWN"
         lines.append(f"- {u} [{s}]")
+
     text = "Current URLs:
 " + "
 ".join(lines)
@@ -263,14 +285,18 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /set_interval <seconds>")
         return
+
     try:
         seconds = int(context.args[0])
         if seconds < MIN_INTERVAL:
-            await update.message.reply_text(f"Minimum interval is {MIN_INTERVAL} seconds.")
+            await update.message.reply_text(
+                f"Minimum interval is {MIN_INTERVAL} seconds."
+            )
             return
     except ValueError:
         await update.message.reply_text("Interval must be an integer.")
         return
+
     cfg = update_config(interval=seconds)
     await update.message.reply_text(
         f"Ping interval updated to {cfg['interval']} seconds."
@@ -284,7 +310,7 @@ async def get_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Current ping interval: {interval} seconds.")
 
 
-# ---------- Main ----------
+# ----------------- Main -----------------
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
